@@ -1,15 +1,173 @@
+open util/ordering[Time]
 
-//レスポンスの状態コード
+/***********************
+
+Network Component
+
+***********************/
+sig NetworkEndpoint{}
+abstract sig HTTPConformist extends NetworkEndpoint{}
+sig HTTPServer extends HTTPConformist{}
+abstract sig HTTPClient extends HTTPConformist{
+	owner:WebPrincipal // owner of the HTTPClient process
+}
+sig Browser extends HTTPClient {
+	trustedCA : set certificateAuthority
+}
+sig InternetExplorer extends Browser{}
+sig InternetExplorer7 extends InternetExplorer{}
+sig InternetExplorer8 extends InternetExplorer{}
+sig Firefox extends Browser{}
+sig Firefox3 extends Firefox {}
+sig Safari extends Browser{}
+
+
+/***********************
+
+Event
+
+***********************/
+abstract sig Event {pre,post : Time} { }
+
+abstract sig NetworkEvent extends Event {
+	from: NetworkEndpoint,
+	to: NetworkEndpoint
+}
+
+abstract sig HTTPEvent extends NetworkEvent {
+	host : Origin
+}
+
+sig HTTPRequest extends HTTPEvent {
+	// host + path == url
+	method: Method,
+	path : Path,
+	queryString : set attributeNameValuePair,  // URL query string parameters
+	headers : set HTTPRequestHeader,
+	body :  set Token,
+	//add
+	schema:Schema
+}
+sig HTTPResponse extends HTTPEvent {
+	statusCode : Status ,
+	headers : set HTTPResponseHeader,
+	//add
+	schema:Schema
+}
+
+// second.pre >= first.post
+pred happensBeforeOrdering[first:Event,second:Event]{
+	second.pre in first.post.*next
+}
+
+// shorter name
+pred happensBefore[first:Event,second:Event]{
+	second.pre in first.post.*next
+}
+
+//HTTPのリクエストをHTTPSで返す
+fun HSTS[t:HTTPTransactions]
+
+/***********************
+
+Headers
+
+************************/
+abstract sig HTTPHeader {}
+abstract sig HTTPResponseHeader extends HTTPHeader{}
+abstract sig HTTPRequestHeader extends HTTPHeader{}
+
+fact noOrphanedHeaders {
+  all h:HTTPRequestHeader|some req:HTTPRequest|h in req.headers
+  all h:HTTPResponseHeader|some resp:HTTPResponse|h in resp.headers
+}
+
+//HSTSのためのヘッダ
+sig StrictTransportSecurityHeader extends HTTPResponseHeader{
+	//HSTSの有効期限
+	max-age:
+	//すべてのサブドメインにこのルールを適用する
+	includeSubDomains:
+	//プリロードに登録する
+	preload:	
+}
+
+
+/************************
+
+DNS
+
+************************/
+sig DNS{
+	parent : DNS + DNSRoot,
+	resolvesTo : set NetworkEndpoint
+}{
+// A DNS Label resolvesTo something
+	some resolvesTo
+}
+
+one sig DNSRoot {}
+
+fact dnsIsAcyclic {
+	 all x: DNS | x !in x.^parent
+//	 all x:dns-dnsRoot | some x.parent
+}
+
+// s is  a subdomain of d
+pred isSubdomainOf[s: DNS, d: DNS]{
+	//e.g. .stanford.edu is a subdomain of .edu
+	d in s.*parent
+}
+
+fun getPrincipalFromDNS[dns : DNS]:Principal{
+	dnslabels.dns
+}
+
+fun getPrincipalFromOrigin[o: Origin]:Principal{
+	getPrincipalFromDNS[o.dnslabel]
+}
+
+fact DNSIsDisjointAmongstPrincipals {
+	all disj p1,p2 : Principal | (no (p1.dnslabels & p2.dnslabels)) and ( no (p1.servers & p2.servers))
+//The servers disjointness is a problem for virtual hosts. We will replace it with disjoint amongst attackers and trusted people or something like that
+}
+
+sig Time {}
+
+fact Traces{
+	all t:Time- last | one e:Event | e.pre=t and e.post=t.next
+	all e:Event | e.post=e.pre.next
+}
+
+abstract sig Token {}
+
+abstract sig Secret extends Token {
+	madeBy : Principal,
+	expiration : lone Time,
+}
+
+sig URL {path:Path, host:Origin}
+
+abstract sig Method {}
+one sig GET extends Method {}
+one sig PUT  extends Method {}
+one sig POST extends Method {}
+one sig DELETE extends Method {}
+one sig OPTIONS extends Method {}
+
+fun safeMethods[]:set Method {
+	GET+OPTIONS
+}
+
 abstract sig Status  {}
 abstract sig RedirectionStatus extends Status {}
-
 lone sig c200,c401 extends Status{}
 lone sig c301,c302,c303,c304,c305,c306,c307 extends RedirectionStatus {}
 
 
 /***********************
 
-User
+HTTPServer Definitions
 
 ***********************/
 abstract sig Principal {
@@ -23,28 +181,24 @@ abstract sig PassivePrincipal extends Principal{}{
 	servers in HTTPConformist
 }
 
-abstract sig WebPrincipal extends PassivePrincipal {
+sig WebPrincipal extends PassivePrincipal {
 	httpClients : set HTTPClient
 }{
-	all c:HTTPClient | c in httpClients implies c.owner = this
+	httpClients.owner = this
 }
 
-sig Alice extends WebPrincipal {}
+lone sig Alice extends WebPrincipal {}
 
-sig ACTIVEATTACKER extends Principal{}
-sig PASSIVEATTACKER extends PassivePrincipal{}
-sig WEBATTACKER extends WebPrincipal{}
+lone sig ACTIVEATTACKER extends Principal{}
+lone sig WEBATTACKER extends WebPrincipal{}
+lone sig PASSIVEATTACKER extends PassivePrincipal{}
+
+lone sig Mallory extends WEBATTACKER {}
 
 abstract sig NormalPrincipal extends WebPrincipal{} { 	dnslabels.resolvesTo in servers}
 lone sig GOOD extends NormalPrincipal{}
 lone sig SECURE extends NormalPrincipal{}
 lone sig ORIGINAWARE extends NormalPrincipal{}
-
-fact noOrphanedPoint{
-	all e:NetworkEndpoint |
-		one p:Principal |
-			e in p.(servers + httpClients)
-}
 
 fact NonActiveFollowHTTPRules {
 // Old rule was :
@@ -61,8 +215,8 @@ fact SecureIsHTTPSOnly {
 
 fact CSRFProtection {
 	all aResp:HTTPResponse | aResp.from in ORIGINAWARE.servers and aResp.statusCode=c200 implies {
-		(response.aResp).request.method in safeMethods or (
-		let theoriginchain = ((response.aResp).request.headers & OriginHeader).theorigin |
+		(resp.aResp).req.method in safeMethods or (
+		let theoriginchain = ((resp.aResp).req.headers & OriginHeader).theorigin |
 			some theoriginchain and theoriginchain.dnslabel in ORIGINAWARE.dnslabels
 		)
 	}
@@ -83,7 +237,7 @@ fact WebPrincipalsObeyTheHostHeader {
 				aResp.from in aResp.host.dnslabel.resolvesTo
 
 				//additionally it responds to some request and keep semantics similar to the way Browsers keep them
-				some t:HTTPTransaction | t.response = aResp and t.request.host.dnslabel = t.response.host.dnslabel and t.request.host.schema = t.response.host.schema
+				some t:HTTPTransaction | t.resp = aResp and t.req.host.dnslabel = t.resp.host.dnslabel and t.req.host.schema = t.resp.host.schema
 			}
 }
 
@@ -103,11 +257,9 @@ pred isAuthorizedAccess[user:WebPrincipal, loc:NetworkEndpoint]{
 	loc in user.httpClients
 }
 
-/*
 fun smartClient[]:set Browser {
 	Firefox3 + InternetExplorer8
 }
-*/
 
 sig WWWAuthnHeader extends HTTPResponseHeader{}{
   all resp:HTTPResponse| (some (WWWAuthnHeader & resp.headers)) => resp.statusCode=c401
@@ -122,15 +274,16 @@ pred somePasswordExists {
   some UserPassword //|p.madeBy in Alice
 }
 
-//run somePasswordExists for 8
+run somePasswordExists for 8
 
 pred basicModelIsConsistent {
   some ScriptContext
   some t1:HTTPTransaction |{
-    some (t1.request.from & Browser ) and
-    some (t1.response)
+    some (t1.req.from & Browser ) and
+    some (t1.resp)
   }
 }
+run basicModelIsConsistent  for 8 but 3 HTTPResponse//, 3 HTTPRequest,
 
 // Browsers run a scriptContext
 sig ScriptContext {
@@ -139,7 +292,7 @@ sig ScriptContext {
 	transactions: set HTTPTransaction
 }{
 // Browsers are honest, they set the from correctly
-	transactions.request.from = location
+	transactions.req.from = location
 }
 
 sig attributeNameValuePair { name: Token, value: Token}
@@ -163,52 +316,40 @@ HTTPTransaction
 
 ************************/
 sig HTTPTransaction {
-	request : one HTTPRequest,
-	response : lone HTTPResponse,
-	re_res : lone CacheReuse,
+	req : HTTPRequest,
+	resp : lone HTTPResponse,
 	cert : lone Certificate,
 	cause : lone HTTPTransaction + RequestAPI
 }{
-	some response implies {
+	some resp implies {
 		//response can come from anyone but HTTP needs to say it is from correct person and hosts are the same, so schema is same
-		response.host = request.host
-		happensBefore[request,response]
+		resp.host = req.host
+		happensBeforeOrdering[req,resp]
 	}
 
-	some re_res implies {
-		happensBefore[request, re_res]
-	}
+	req.host.schema = HTTPS implies some cert and some resp
+	some cert implies req.host.schema = HTTPS
 
-	request.host.schema = HTTPS implies some cert and some response
-	some cert implies request.host.schema = HTTPS
-}
-
-fact limitHTTPTransaction{
-	all req:HTTPRequest | lone t:HTTPTransaction | t.request = req
-	all res:HTTPResponse | lone t:HTTPTransaction | t.response = res
-	all reuse:CacheReuse | lone t:HTTPTransaction | t.re_res = reuse
-	no t:HTTPTransaction |
-		some t.response and some t.re_res
 }
 
 fact CauseHappensBeforeConsequence  {
 	all t1: HTTPTransaction | some (t1.cause) implies {
-       (some t0:HTTPTransaction | (t0 in t1.cause and happensBefore[t0.response, t1.request]))
+		(some t0:HTTPTransaction | (t0 in t1.cause and happensBeforeOrdering[t0.resp, t1.req]))
 		or (some r0:RequestAPI | (r0 in t1.cause ))
-       // or (some r0:RequestAPI | (r0 in t1.cause and happensBefore[r0, t1.req]))
+		// or (some r0:RequestAPI | (r0 in t1.cause and happensBeforeOrdering[r0, t1.req]))
     }
 }
 
 fun getTrans[e:HTTPEvent]:HTTPTransaction{
-	(request+response).e
+	(req+resp).e
 }
 
 fun getScriptContext[t:HTTPTransaction]:ScriptContext {
 		transactions.t
 }
 
-fun getContextOf[req:HTTPRequest]:Origin {
-	(transactions.(request.req)).owner
+fun getContextOf[request:HTTPRequest]:Origin {
+	(transactions.(req.request)).owner
 }
 
 pred isCrossOriginRequest[request:HTTPRequest]{
@@ -226,13 +367,13 @@ pred isCrossOriginRequest[request:HTTPRequest]{
 sig OriginHeader extends HTTPRequestHeader {theorigin: Origin}
 
 
-fun getFinalResponse[req:HTTPRequest]:HTTPResponse{
-		{res : HTTPResponse | not ( res.statusCode in RedirectionStatus) and res in ((request.req).*(~cause)).response}
+fun getFinalResponse[request:HTTPRequest]:HTTPResponse{
+		{response : HTTPResponse | not ( response.statusCode in RedirectionStatus) and response in ((req.request).*(~cause)).resp}
 }
 
-pred isFinalResponseOf[req:HTTPRequest, res : HTTPResponse] {
-		not ( res.statusCode in RedirectionStatus)
-		res in ((request.req).*(~cause)).response
+pred isFinalResponseOf[request:HTTPRequest, response : HTTPResponse] {
+		not ( response.statusCode in RedirectionStatus)
+		response in ((req.request).*(~cause)).resp
 }
 
 //enum Port{P80,P8080}
@@ -303,11 +444,11 @@ fact CookiesAreSameOriginAndSomeOneToldThemToTheClient{
 	all areq:HTTPRequest |{
 			areq.from in Browser
 			some ( areq.headers & CookieHeader)
-	} implies  all acookie :(areq.headers & CookieHeader).thecookie | some aresp: location.(areq.from).transactions.response | {
+	} implies  all acookie :(areq.headers & CookieHeader).thecookie | some aresp: location.(areq.from).transactions.resp | {
 				//don't do same origin check as http cookies can go over https
 				aresp.host.dnslabel = areq.host.dnslabel
 				acookie in (aresp.headers & SetCookieHeader).thecookie
-				happensBefore[aresp,areq]
+				happensBeforeOrdering[aresp,areq]
 	}
 }
 
@@ -319,7 +460,7 @@ pred httpPacketHasCookie[c:Cookie,httpevent:HTTPRequest+HTTPResponse]{
 pred hasKnowledgeViaUnencryptedHTTPEvent[c: Cookie, ne : NetworkEndpoint, usageEvent: Event]{
 		ne !in WebPrincipal.servers + Browser
 		some httpevent : HTTPEvent | {
-			happensBefore[httpevent,usageEvent]
+			happensBeforeOrdering[httpevent,usageEvent]
 			httpevent.host.schema = HTTP
 			httpPacketHasCookie[c,httpevent]
 		}
@@ -327,12 +468,12 @@ pred hasKnowledgeViaUnencryptedHTTPEvent[c: Cookie, ne : NetworkEndpoint, usageE
 
 pred hasKnowledgeViaDirectHTTP[c:Cookie,ne:NetworkEndpoint,usageEvent:Event]{
 		some t: HTTPTransaction | {
-		happensBefore[t.request,usageEvent]
-		httpPacketHasCookie[c,t.request]
-		t.response.from = ne
+		happensBeforeOrdering[t.req,usageEvent]
+		httpPacketHasCookie[c,t.req]
+		t.resp.from = ne
 	} or {
-		happensBefore[t.response,usageEvent]
-		httpPacketHasCookie[c,t.response]
+		happensBeforeOrdering[t.resp,usageEvent]
+		httpPacketHasCookie[c,t.resp]
 		some ((transactions.t).location & ne)
 		}
 }
@@ -362,11 +503,9 @@ fact NormalPrincipalsDontReuseCookies{
 	}
 }
 
-/*
 run show2 {
 	some (SetCookieHeader).thecookie
 } for 6
-*/
 
 
 /***********************
@@ -376,108 +515,9 @@ HTTP Facts
 ************************/
 fact scriptContextsAreSane {
 	all disj sc,sc':ScriptContext | no (sc.transactions & sc'.transactions)
-	all t:HTTPTransaction | t.request.from in Browser implies t in ScriptContext.transactions
+	all t:HTTPTransaction | t.req.from in Browser implies t in ScriptContext.transactions
 }
 
 fact HTTPTransactionsAreSane {
-	all disj t,t':HTTPTransaction | no (t.response & t'.response ) and no (t.request & t'.request)
-}
-
-
-/***********************
-
-State
-
-************************/
-abstract sig State{
-	flow: set State,
-	eq: one EqItem,
-	dif: one DifItem,
-	current: set Time
-}
-abstract sig EqItem{}
-abstract sig DifItem{}
-
-sig StateTransaction extends HTTPTransaction{
-	beforeState: set State,
-	afterState: set State
-}
-
-//同じeqをもつ => 同じbefore/afterStateに存在しない
-//同じeq,difを持つStateは存在しない
-fact noMultipleState{
-	all str:StateTransaction |
-		all disj s,s':CacheState |
-			s.eq = s'.eq implies
-				{
-					s in str.beforeState implies s' !in str.beforeState
-					s in str.afterState implies s' !in str.afterState
-				}
-
-	no disj s,s':State |{
-		s.eq = s'.eq
-		s.dif = s'.dif
-	}
-}
-
-//すべてのStateは、どこかのbefore/afterStateに属する
-//すべてのStateTransactionは、before/afterStateにStateを持つ
-//使用されていないEq/DifItemは存在しない
-fact noOrphanedStates{
-	all s:State | s in StateTransaction.(beforeState + afterState)
-	all str:StateTransaction | some str.(beforeState + afterState)
-	all i:EqItem | i in State.eq
-	all i:DifItem | i in State.dif
-}
-
-//flowに関する条件
-fact catchStateFlow{
-	all pre,post:State, str:StateTransaction |
-		LastState[pre, post, str] implies
-			post in pre.flow
-	all s,s':State |
-		s' in s.flow implies
-			(some str:StateTransaction | LastState[s, s', str])
-}
-
-//StateがbeforeStateに属する <=> Stateがリクエストの時間を持つ
-//StateがafterStateに属する <=> Stateがレスポンスの時間を持つ
-fact StateCurrentTime{
-	all s:State |
-		all str:StateTransaction |
-			{
-				s in str.beforeState iff str.request.current in s.current
-				s in str.afterState iff str.(response + re_res).current in s.current
-			}
-
-	all t:Time |
-		t in State.current implies t in StateTransaction.(request + response + re_res).current
-}
-
-//preがpostの直前の状態か確認
-pred LastState[pre:State, post:State, str:StateTransaction]{
-	pre.eq = post.eq
-	post in str.(beforeState + afterState)
-
-	some t,t':Time |
-		{
-			//t:pre, t':post
-			//pre->post
-			t in pre.current
-			t' in str.(request + response + re_res).current
-			t' in str.request.current implies post in str.beforeState
-			t' in str.(response + re_res).current implies post in str.afterState
-			t' in t.next.*next
-
-			all s:State, t'':Time |
-				(s.eq = pre.eq and t'' in s.current) implies	//t'':s
-						(t in t''.*next) or (t'' in t'.*next)	//s => pre (or) post => cs
-		}
-}
-
-//sが初期状態か確認
-pred InitialState[s:State]{
-	all s':State |
-		s.eq = s'.eq implies
-			s'.current in s.current.*next	//s => s'
+	all disj t,t':HTTPTransaction | no (t.resp & t'.resp ) and no (t.req & t'.req)
 }
