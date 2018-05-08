@@ -12,7 +12,9 @@ abstract sig HTTPClient extends HTTPConformist{
 	owner:WebPrincipal // owner of the HTTPClient process
 }
 sig Browser extends HTTPClient {
-	trustedCA : set certificateAuthority
+	trustedCA : set certificateAuthority,
+	//add HSTS Domain List
+	HSTSList: set  DNS
 }
 sig InternetExplorer extends Browser{}
 sig InternetExplorer7 extends InternetExplorer{}
@@ -48,6 +50,7 @@ sig HTTPRequest extends HTTPEvent {
 	//add
 	schema:Schema
 }
+
 sig HTTPResponse extends HTTPEvent {
 	statusCode : Status ,
 	headers : set HTTPResponseHeader,
@@ -85,7 +88,7 @@ fact noOrphanedHeaders {
 //HSTSのためのヘッダ
 sig StrictTransportSecurityHeader extends HTTPResponseHeader{
 	//HSTSの有効期限
-	max-age:
+	max-age:Time,
 	//すべてのサブドメインにこのルールを適用する
 	includeSubDomains:
 	//プリロードに登録する
@@ -327,7 +330,7 @@ sig HTTPTransaction {
 		happensBeforeOrdering[req,resp]
 	}
 
-	req.host.schema = HTTPS implies some cert and some resp
+	req.host.schema = HTTPS implies some cert
 	some cert implies req.host.schema = HTTPS
 
 }
