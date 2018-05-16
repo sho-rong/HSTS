@@ -5,6 +5,7 @@ open util/ordering[Time]
 Network Component
 
 ***********************/
+//NetworkEndPoint means Network host
 sig NetworkEndpoint{}
 abstract sig HTTPConformist extends NetworkEndpoint{}
 sig HTTPServer extends HTTPConformist{}
@@ -14,8 +15,9 @@ abstract sig HTTPClient extends HTTPConformist{
 sig Browser extends HTTPClient {
 	trustedCA : set certificateAuthority,
 	//add HSTS Domain List
-	HSTSList: set  DNS
+	HSTSList: set  host
 }
+
 sig InternetExplorer extends Browser{}
 sig InternetExplorer7 extends InternetExplorer{}
 sig InternetExplorer8 extends InternetExplorer{}
@@ -40,22 +42,63 @@ abstract sig HTTPEvent extends NetworkEvent {
 	host : Origin
 }
 
+//enum Port{P80,P8080}
+enum Schema{HTTP,HTTPS}
+sig Path{}
+sig INDEX,HOME,SENSITIVE, PUBLIC, LOGIN,LOGOUT,REDIRECT extends Path{}
+sig PATH_TO_COMPROMISE extends SENSITIVE {}
+
+sig Origin {
+//	port: Port,
+	schema: Schema,
+	dnslabel : DNS
+}
+
+abstract sig certificateAuthority{}
+one sig BADCA,GOODCA extends certificateAuthority{}
+
+sig Certificate {
+	ca : certificateAuthority,
+	cn : DNS,
+	ne : NetworkEndpoint
+}{
+
+	//GoodCAVerifiesNonTrivialDNSValues
+	ca in GOODCA and cn.parent != DNSRoot implies
+			some p:Principal | {
+				cn in p.dnslabels
+				ne in p.servers
+				ne in cn.resolvesTo
+			}
+}
+
+//content in HTTP body
+abstract sig Content{}
+sig link extends Content{
+	ref:lone Origin
+}
+
 sig HTTPRequest extends HTTPEvent {
 	// host + path == url
 	method: Method,
 	path : Path,
 	queryString : set attributeNameValuePair,  // URL query string parameters
 	headers : set HTTPRequestHeader,
-	body :  set Token,
+	body :  set Content,
 	//add
 	schema:Schema
+}{
+	host.DNS.resolvesTo = to	
 }
 
 sig HTTPResponse extends HTTPEvent {
 	statusCode : Status ,
 	headers : set HTTPResponseHeader,
 	//add
-	schema:Schema
+	schema:Schema,
+	body: set Content
+}{
+	host.DNS.resolvesTo = from
 }
 
 // second.pre >= first.post
@@ -68,8 +111,6 @@ pred happensBefore[first:Event,second:Event]{
 	second.pre in first.post.*next
 }
 
-//HTTPのリクエストをHTTPSで返す
-fun HSTS[t:HTTPTransactions]
 
 /***********************
 
@@ -105,7 +146,7 @@ sig DNS{
 	parent : DNS + DNSRoot,
 	resolvesTo : set NetworkEndpoint
 }{
-// A DNS Label resolvesTo something
+// A DNS Label resolvesTo some NetworkEndpoint
 	some resolvesTo
 }
 
@@ -143,6 +184,8 @@ fact Traces{
 }
 
 abstract sig Token {}
+
+
 
 abstract sig Secret extends Token {
 	madeBy : Principal,
@@ -322,7 +365,8 @@ sig HTTPTransaction {
 	req : HTTPRequest,
 	resp : lone HTTPResponse,
 	cert : lone Certificate,
-	cause : lone HTTPTransaction + RequestAPI
+	cause : lone HTTPTransaction + RequestAPI,
+	
 }{
 	some resp implies {
 		//response can come from anyone but HTTP needs to say it is from correct person and hosts are the same, so schema is same
@@ -332,14 +376,19 @@ sig HTTPTransaction {
 
 	req.host.schema = HTTPS implies some cert
 	some cert implies req.host.schema = HTTPS
-
+　//add
+	req.schema = HTTPS => req.host.schema = HTTPS
+	req.host.schema =HTTPS !=> req.schema = HTTPS
+	
+	res.schema = HTTPS => res.host.schema = HTTPS
+	res.host.schema =HTTPS !=> res.schema = HTTPS	
+		
 }
 
 fact CauseHappensBeforeConsequence  {
 	all t1: HTTPTransaction | some (t1.cause) implies {
 		(some t0:HTTPTransaction | (t0 in t1.cause and happensBeforeOrdering[t0.resp, t1.req]))
 		or (some r0:RequestAPI | (r0 in t1.cause ))
-		// or (some r0:RequestAPI | (r0 in t1.cause and happensBeforeOrdering[r0, t1.req]))
     }
 }
 
@@ -379,35 +428,7 @@ pred isFinalResponseOf[request:HTTPRequest, response : HTTPResponse] {
 		response in ((req.request).*(~cause)).resp
 }
 
-//enum Port{P80,P8080}
-enum Schema{HTTP,HTTPS}
-sig Path{}
-sig INDEX,HOME,SENSITIVE, PUBLIC, LOGIN,LOGOUT,REDIRECT extends Path{}
-sig PATH_TO_COMPROMISE extends SENSITIVE {}
 
-sig Origin {
-//	port: Port,
-	schema: Schema,
-	dnslabel : DNS,
-}
-
-abstract sig certificateAuthority{}
-one sig BADCA,GOODCA extends certificateAuthority{}
-
-sig Certificate {
-	ca : certificateAuthority,
-	cn : DNS,
-	ne : NetworkEndpoint
-}{
-
-	//GoodCAVerifiesNonTrivialDNSValues
-	ca in GOODCA and cn.parent != DNSRoot implies
-			some p:Principal | {
-				cn in p.dnslabels
-				ne in p.servers
-				ne in cn.resolvesTo
-			}
-}
 
 
 /****************************
