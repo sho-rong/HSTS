@@ -25,6 +25,40 @@ sig Firefox extends Browser{}
 sig Firefox3 extends Firefox {}
 sig Safari extends Browser{}
 
+abstract sig HTTPIntermediary extends HTTPConformist{}
+sig HTTPProxy extends HTTPIntermediary{}
+sig HTTPGateway extends HTTPIntermediary{}
+
+fact Intermediary{
+	all tr:HTTPTransaction |{
+		//通常のユーザ + WEBATTACKERが所有する中継者のふるまい
+		//応答を行う場合、その応答を得る別のトランザクションがリクエストとレスポンスの間に存在する
+		(tr.request.to in HTTPIntermediary) and (tr.request.to in WebPrincipal.servers) and (one tr.response) implies{
+			some tr':HTTPTransaction |{
+				tr != tr'
+
+				//tr.req -> tr'.req -> tr'.res -> tr.res
+				tr'.request.current in tr.request.current.*next
+				tr.response.current in tr'.response.current.*next
+
+				//processing
+				tr'.request.from = tr.request.to
+				tr.request.schema=HTTPS implies tr.request.body = tr'.request.body
+				
+				tr.response.statusCode = tr'.response.statusCode
+			}
+		}
+	}
+}
+
+fact HTTPPull{
+	no req:HTTPRequest | req.from in HTTPServer
+	no req:HTTPRequest | req.to in HTTPClient
+	no res:HTTPResponse | res.from in HTTPClient
+	no res:HTTPResponse | res.to in HTTPServer
+}
+
+
 
 /***********************
 
