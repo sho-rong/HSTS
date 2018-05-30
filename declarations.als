@@ -15,7 +15,7 @@ abstract sig HTTPClient extends HTTPConformist{
 sig Browser extends HTTPClient {
 	trustedCA : set certificateAuthority,
 	//add HSTS Domain List
-	HSTSList: set  host
+	HSTSList: set  Origin
 }
 
 sig InternetExplorer extends Browser{}
@@ -33,19 +33,15 @@ fact Intermediary{
 	all tr:HTTPTransaction |{
 		//通常のユーザ + WEBATTACKERが所有する中継者のふるまい
 		//応答を行う場合、その応答を得る別のトランザクションがリクエストとレスポンスの間に存在する
-		(tr.request.to in HTTPIntermediary) and (tr.request.to in WebPrincipal.servers) and (one tr.response) implies{
+		(tr.req.to in HTTPIntermediary) and (tr.req.to in WebPrincipal.servers) and (one tr.resp) implies{
 			some tr':HTTPTransaction |{
 				tr != tr'
 
-				//tr.req -> tr'.req -> tr'.res -> tr.res
-				tr'.request.current in tr.request.current.*next
-				tr.response.current in tr'.response.current.*next
-
 				//processing
-				tr'.request.from = tr.request.to
-				tr.request.schema=HTTPS implies tr.request.body = tr'.request.body
+				tr'.req.from = tr.req.to
+				tr.req.schema=HTTPS implies tr.req.body = tr'.req.body
 				
-				tr.response.statusCode = tr'.response.statusCode
+				tr.resp.statusCode = tr'.resp.statusCode
 			}
 		}
 	}
@@ -112,28 +108,7 @@ sig link extends Content{
 	ref:lone Origin
 }
 
-sig HTTPRequest extends HTTPEvent {
-	// host + path == url
-	method: Method,
-	path : Path,
-	queryString : set attributeNameValuePair,  // URL query string parameters
-	headers : set HTTPRequestHeader,
-	body :  set Content,
-	//add
-	schema:Schema
-}{
-	host.DNS.resolvesTo = to	
-}
 
-sig HTTPResponse extends HTTPEvent {
-	statusCode : Status ,
-	headers : set HTTPResponseHeader,
-	//add
-	schema:Schema,
-	body: set Content
-}{
-	host.DNS.resolvesTo = from
-}
 
 // second.pre >= first.post
 pred happensBeforeOrdering[first:Event,second:Event]{
@@ -160,6 +135,7 @@ fact noOrphanedHeaders {
   all h:HTTPResponseHeader|some resp:HTTPResponse|h in resp.headers
 }
 
+/*
 //HSTSのためのヘッダ
 sig StrictTransportSecurityHeader extends HTTPResponseHeader{
 	//HSTSの有効期限
@@ -169,7 +145,7 @@ sig StrictTransportSecurityHeader extends HTTPResponseHeader{
 	//プリロードに登録する
 	preload:	
 }
-
+*/
 
 /************************
 
@@ -180,7 +156,7 @@ sig DNS{
 	parent : DNS + DNSRoot,
 	resolvesTo : set NetworkEndpoint
 }{
-// A DNS Label resolvesTo some NetworkEndpoint
+// A  Label resolvesTo some NetworkEndpoint
 	some resolvesTo
 }
 
@@ -395,6 +371,25 @@ abstract sig RequestAPI{} // extends Event
 HTTPTransaction
 
 ************************/
+sig HTTPRequest extends HTTPEvent {
+	// host + path == url
+	method: Method,
+	path : Path,
+	queryString : set attributeNameValuePair,  // URL query string parameters
+	headers : set HTTPRequestHeader,
+	body :  set Token,
+	//add
+	schema:Schema
+}
+
+sig HTTPResponse extends HTTPEvent {
+	statusCode : Status ,
+	headers : set HTTPResponseHeader,
+	//add
+	schema:Schema,
+	body: set Token
+}
+
 sig HTTPTransaction {
 	req : HTTPRequest,
 	resp : lone HTTPResponse,
@@ -410,14 +405,34 @@ sig HTTPTransaction {
 
 	req.host.schema = HTTPS implies some cert
 	some cert implies req.host.schema = HTTPS
-　//add
+    //add
 	req.schema = HTTPS => req.host.schema = HTTPS
-	req.host.schema =HTTPS !=> req.schema = HTTPS
+	!(req.host.schema =HTTPS => req.schema = HTTPS)
 	
-	res.schema = HTTPS => res.host.schema = HTTPS
-	res.host.schema =HTTPS !=> res.schema = HTTPS	
+	resp.schema = HTTPS => resp.host.schema = HTTPS
+	!(resp.host.schema =HTTPS => resp.schema = HTTPS)	
 		
 }
+
+/*
+sig HTTPTransactionViaInt extends HTTPTransaction {
+	//req,res: Client<->Server
+	//req',resp':Intermdiary<->Server
+	
+	req':HTTPRequest,
+    resp':HTTPResponse
+		
+}{
+	happensBefore[req,req']
+	happensBefore[req',res']
+	happensBefore[res',res]
+	
+	req.host=req'.host=res.host=res'.host //Server
+
+	
+}
+
+*/
 
 fact CauseHappensBeforeConsequence  {
 	all t1: HTTPTransaction | some (t1.cause) implies {
